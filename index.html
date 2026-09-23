@@ -191,7 +191,6 @@
                 unsubscribeMealSync = null;
             }
 
-            // Safety timeout to ensure loading spinner NEVER hangs
             const safetyTimer = setTimeout(() => {
                 if (state.loading) {
                     console.warn("Safety timeout reached, loading fallback meals.");
@@ -735,6 +734,7 @@
         async function confirmDeleteMeal(id) {
             if (confirm('Are you sure you want to delete this meal?')) {
                 await MealService.deleteMeal(id);
+                state.meals = state.meals.filter(m => m.id !== id);
                 showToast('Meal deleted successfully.');
                 render();
             }
@@ -776,10 +776,15 @@
             if (!name) return;
 
             if (state.modalMeal && state.modalMeal.id) {
-                await MealService.updateMeal(state.modalMeal.id, { name, category, ingredients, notes });
+                const updated = await MealService.updateMeal(state.modalMeal.id, { name, category, ingredients, notes });
+                const idx = state.meals.findIndex(m => m.id === state.modalMeal.id);
+                if (idx !== -1) {
+                    state.meals[idx] = updated;
+                }
                 showToast('Meal updated successfully!');
             } else {
-                await MealService.addMeal({ name, category, ingredients, notes });
+                const newMeal = await MealService.addMeal({ name, category, ingredients, notes });
+                state.meals.push(newMeal);
                 showToast('New meal added to your cookbook!');
             }
 
@@ -879,7 +884,7 @@
         function escapeHTML(str) {
             if (!str) return '';
             return str.replace(/[&<>'"]/g, 
-                tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+                tag => ({ '&': '&amp;', '<': '&lt;'> ': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
             );
         }
 
