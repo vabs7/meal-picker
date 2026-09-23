@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meal Picker - What's for Dinner Tonight?</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <!-- Tone.js for Sound Effects -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <!-- Firebase Compat SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <!-- Firebase Config & Data Service -->
+    <script src="firebase-config.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'sans-serif'],
+                        heading: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#fff1f2',
+                            100: '#ffe4e6',
+                            200: '#fecdd3',
+                            500: '#f43f5e',
+                            600: '#e11d48',
+                            700: '#be123c',
+                            800: '#9f1239',
+                            900: '#881337',
+                        },
+                        amber: {
+                            400: '#fbbf24',
+                            500: '#f59e0b',
+                        }
+                    },
+                    animation: {
+                        'pulse-glow': 'pulseGlow 2s infinite',
+                        'float': 'float 3s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        pulseGlow: {
+                            '0%, 100%': { boxShadow: '0 0 15px rgba(225, 29, 72, 0.4)' },
+                            '50%': { boxShadow: '0 0 30px rgba(225, 29, 72, 0.8)' },
+                        },
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-6px)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .reel-track {
+            will-change: transform;
+            transition-timing-function: cubic-bezier(0.15, 0.85, 0.35, 1);
+        }
+        .card-shadow { box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.05); }
+    </style>
+</head>
+<body class="h-full bg-slate-900 text-slate-100 font-sans antialiased flex flex-col justify-between selection:bg-brand-500 selection:text-white pb-20 md:pb-0">
+
+    <div id="app" class="flex-1 flex flex-col min-h-screen">
+        <!-- Main Application Render Target -->
+    </div>
+
+    <!-- Persistent Bottom Mobile Navigation Bar -->
+    <nav id="mobile-nav" class="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-6 py-2 flex items-center justify-around text-xs font-semibold">
+        <button onclick="switchTab('picker')" id="nav-picker" class="flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition">
+            <i data-lucide="dices" class="w-6 h-6"></i>
+            <span>Pick Meal</span>
+        </button>
+        <button onclick="switchTab('meals')" id="nav-meals" class="flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition">
+            <i data-lucide="utensils-crossed" class="w-6 h-6"></i>
+            <span>My Meals</span>
+        </button>
+    </nav>
+
+    <script>
+        // --- Global Application State ---
+        let state = {
+            currentUser: null,
+            guestMode: false,
+            currentTab: 'picker', // 'picker', 'meals', 'auth'
+            authMode: 'signin', // 'signin', 'signup'
+            authError: null,
+            
+            meals: [],
+            loading: true,
+            searchQuery: '',
+            selectedCategory: 'All',
+            
+            // Horizontal Spin Reel Game State
+            spinning: false,
+            reelPosition: 0,
+            winnerMeal: null,
+            modalMeal: null,
+            isEditing: false,
+            
+            soundEnabled: true,
+            toastMessage: null
+        };
+
+        // --- Sound Effects Setup (Tone.js) ---
+        let synth = null;
+        function initAudio() {
+            if (!synth) {
+                try {
+                    Tone.start();
+                    synth = new Tone.PolySynth(Tone.Synth).toDestination();
+                    synth.volume.value = -12;
+                } catch(e) {}
+            }
+        }
+
+        function playTickSound() {
+            if (!state.soundEnabled) return;
+            try {
+                initAudio();
+                if (synth) synth.triggerAttackRelease("C5", "32n");
+            } catch(e) {}
+        }
+
+        function playWinSound() {
+            if (!state.soundEnabled) return;
+            try {
+                initAudio();
+                if (synth) {
+                    const now = Tone.now();
+                    synth.triggerAttackRelease("C4", "8n", now);
+                    synth.triggerAttackRelease("E4", "8n", now + 0.1);
+                    synth.triggerAttackRelease("G4", "8n", now + 0.2);
+                    synth.triggerAttackRelease("C5", "4n", now + 0.3);
+                }
+            } catch(e) {}
+        }
+
+        function showToast(message) {
+            state.toastMessage = message;
+            render();
+            setTimeout(() => {
+                if (state.toastMessage === message) {
+                    state.toastMessage = null;
+                    render();
+                }
+            }, 3000);
+        }
+
+        // --- Auth State Initialization ---
+        let unsubscribeMealSync = null;
+
+        function initAuthListener() {
+            AuthService.onAuthStateChanged(async (user) => {
+                state.currentUser = user;
+                if (user) {
+                    state.guestMode = false;
+                    if (state.currentTab === 'auth') state.currentTab = 'picker';
+                    showToast(`Welcome back, ${user.displayName || user.email.split('@')[0]}!`);
+                }
+                loadMeals();
+            });
+        }
+
+        async function loadMeals() {
+            state.loading = true;
+            render();
+
+            if (unsubscribeMealSync) {
+                unsubscribeMealSync();
+                unsubscribeMealSync = null;
+            }
+            
+            unsubscribeMealSync = MealService.subscribeMeals((meals) => {
+                state.meals = meals;
+                state.loading = false;
+                render();
+            });
+
+            if (!unsubscribeMealSync) {
+                state.meals = await MealService.getMeals();
+                state.loading = false;
+                render();
+            }
+        }
+
+        function switchTab(tab) {
+            state.currentTab = tab;
+            render();
+        }
+
+        function toggleSound() {
+            state.soundEnabled = !state.soundEnabled;
+            showToast(state.soundEnabled ? '🔊 Sound effects enabled' : '🔇 Sound effects muted');
+        }
+
+        // --- Auth Actions ---
+        async function handleEmailAuth(e) {
+            e.preventDefault();
+            state.authError = null;
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value;
+            const displayName = document.getElementById('auth-name') ? document.getElementById('auth-name').value.trim() : '';
+
+            try {
+                if (state.authMode === 'signup') {
+                    await AuthService.signUp(email, password, displayName);
+                } else {
+                    await AuthService.signIn(email, password);
+                }
+                state.currentTab = 'picker';
+                render();
+            } catch (err) {
+                state.authError = err.message || 'Authentication failed. Please check your credentials.';
+                render();
+            }
+        }
+
+        async function handleGoogleAuth() {
+            state.authError = null;
+            try {
+                await AuthService.signInWithGoogle();
+                state.currentTab = 'picker';
+                render();
+            } catch (err) {
+                state.authError = err.message || 'Google Sign-In failed.';
+                render();
+            }
+        }
+
+        async function handleLogout() {
+            await AuthService.signOut();
+            state.currentUser = null;
+            state.guestMode = true;
+            showToast('Logged out successfully.');
+            render();
+        }
+
+        function continueAsGuest() {
+            state.guestMode = true;
+            state.currentTab = 'picker';
+            showToast('Browsing in Guest Mode.');
+            render();
+        }
+
+        // --- Main Render Engine ---
+        function render() {
+            const app = document.getElementById('app');
+            if (!app) return;
+
+            const mobileNav = document.getElementById('mobile-nav');
+            if (mobileNav) {
+                mobileNav.style.display = (state.currentTab === 'auth') ? 'none' : 'flex';
+                
+                const navPicker = document.getElementById('nav-picker');
+                const navMeals = document.getElementById('nav-meals');
+                if (navPicker && navMeals) {
+                    if (state.currentTab === 'picker') {
+                        navPicker.className = 'flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition text-brand-500 font-bold';
+                        navMeals.className = 'flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition text-slate-400 hover:text-slate-200';
+                    } else {
+                        navPicker.className = 'flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition text-slate-400 hover:text-slate-200';
+                        navMeals.className = 'flex flex-col items-center space-y-1 py-1 px-4 rounded-xl transition text-brand-500 font-bold';
+                    }
+                }
+            }
+
+            const toastHTML = state.toastMessage ? `
+                <div class="fixed top-5 right-5 z-50 bg-slate-800 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center space-x-3 border border-slate-700 animate-bounce">
+                    <i data-lucide="sparkles" class="w-5 h-5 text-brand-500"></i>
+                    <span class="text-sm font-medium">${state.toastMessage}</span>
+                </div>
+            ` : '';
+
+            app.innerHTML = `
+                ${toastHTML}
+                ${renderHeader()}
+                <main class="flex-1 flex flex-col">
+                    ${state.currentTab === 'auth' ? renderAuthPage() : (state.loading ? renderLoadingState() : (state.currentTab === 'picker' ? renderPickerPage() : renderMealsPage()))}
+                </main>
+                ${renderMealModal()}
+            `;
+
+            lucide.createIcons();
+        }
+
+        // --- Component: Header ---
+        function renderHeader() {
+            const isCloud = MealService.isCloudConnected();
+            const user = state.currentUser;
+
+            return `
+                <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                        <!-- Logo & Brand -->
+                        <div class="flex items-center space-x-3 cursor-pointer" onclick="switchTab('picker')">
+                            <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-700 to-brand-500 flex items-center justify-center text-white shadow-lg shadow-brand-600/30 animate-pulse-glow">
+                                <i data-lucide="utensils" class="w-5 h-5"></i>
+                            </div>
+                            <div>
+                                <span class="font-heading font-extrabold text-xl text-white tracking-tight">Meal Picker</span>
+                                <div class="flex items-center space-x-1.5">
+                                    <span class="w-2 h-2 rounded-full ${isCloud ? 'bg-emerald-500' : 'bg-amber-500'}"></span>
+                                    <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">${isCloud ? (user ? 'Cloud Synced' : 'Cloud Ready') : 'Local Mode'}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Desktop Tabs -->
+                        <nav class="hidden md:flex items-center space-x-2">
+                            <button onclick="switchTab('picker')" class="px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center space-x-2 ${state.currentTab === 'picker' ? 'bg-brand-600 text-white shadow-md shadow-brand-600/20' : 'text-slate-300 hover:bg-slate-800'}">
+                                <i data-lucide="dices" class="w-4 h-4"></i>
+                                <span>Horizontal Spin Reel</span>
+                            </button>
+                            <button onclick="switchTab('meals')" class="px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center space-x-2 ${state.currentTab === 'meals' ? 'bg-brand-600 text-white shadow-md shadow-brand-600/20' : 'text-slate-300 hover:bg-slate-800'}">
+                                <i data-lucide="utensils-crossed" class="w-4 h-4"></i>
+                                <span>My Meals (${state.meals.length})</span>
+                            </button>
+                        </nav>
+
+                        <!-- User Profile & Action Controls -->
+                        <div class="flex items-center space-x-3">
+                            <button onclick="toggleSound()" title="Toggle Sound" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+                                <i data-lucide="${state.soundEnabled ? 'volume-2' : 'volume-x'}" class="w-4 h-4"></i>
+                            </button>
+                            
+                            ${user ? `
+                                <div class="flex items-center space-x-2 pl-2 border-l border-slate-800">
+                                    <div class="w-8 h-8 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-xs shadow-md">
+                                        ${(user.displayName || user.email).charAt(0).toUpperCase()}
+                                    </div>
+                                    <button onclick="handleLogout()" title="Sign Out" class="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-xl transition">
+                                        <i data-lucide="log-out" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            ` : `
+                                <button onclick="switchTab('auth')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-sm transition flex items-center space-x-1.5 border border-slate-700">
+                                    <i data-lucide="user" class="w-4 h-4"></i>
+                                    <span>Sign In</span>
+                                </button>
+                            `}
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        // --- PAGE: User Authentication (Login & Signup) ---
+        function renderAuthPage() {
+            const isSignUp = state.authMode === 'signup';
+
+            return `
+                <div class="flex-1 flex items-center justify-center px-4 py-12 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950">
+                    <div class="max-w-md w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-8 shadow-2xl backdrop-blur-md">
+                        
+                        <div class="text-center mb-8">
+                            <div class="w-16 h-16 bg-brand-600/20 text-brand-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-inner border border-brand-500/30 animate-pulse-glow">
+                                <i data-lucide="utensils" class="w-8 h-8"></i>
+                            </div>
+                            <h2 class="text-3xl font-heading font-extrabold text-white tracking-tight">
+                                ${isSignUp ? 'Create your Account' : 'Welcome to Meal Picker'}
+                            </h2>
+                            <p class="text-slate-400 text-xs sm:text-sm mt-2">
+                                ${isSignUp ? 'Sign up to sync your custom dinner meals across all your devices.' : 'Log in to access your personal family cookbook and meal spinner.'}
+                            </p>
+                        </div>
+
+                        ${state.authError ? `
+                            <div class="mb-6 p-4 bg-red-950/60 border border-red-800/80 rounded-2xl text-red-300 text-xs flex items-center space-x-2">
+                                <i data-lucide="alert-triangle" class="w-4 h-4 text-red-400 flex-shrink-0"></i>
+                                <span>${escapeHTML(state.authError)}</span>
+                            </div>
+                        ` : ''}
+
+                        <!-- Auth Form -->
+                        <form onsubmit="handleEmailAuth(event)" class="space-y-4">
+                            ${isSignUp ? `
+                                <div>
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Your Name</label>
+                                    <input type="text" id="auth-name" required placeholder="e.g. Sarah Johnson" class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                                </div>
+                            ` : ''}
+
+                            <div>
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Email Address</label>
+                                <input type="email" id="auth-email" required placeholder="sarah@example.com" class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Password</label>
+                                <input type="password" id="auth-password" required minlength="6" placeholder="••••••••" class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                            </div>
+
+                            <button type="submit" class="w-full py-3.5 px-4 bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-800 text-white font-bold rounded-xl shadow-lg shadow-brand-600/30 text-sm transition">
+                                ${isSignUp ? 'Create Free Account' : 'Sign In'}
+                            </button>
+                        </form>
+
+                        <div class="relative my-6 text-center">
+                            <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-800"></div></div>
+                            <span class="relative px-3 bg-slate-900 text-slate-500 text-xs uppercase font-semibold">Or</span>
+                        </div>
+
+                        <!-- Third Party Auth & Guest Option -->
+                        <div class="space-y-3">
+                            <button onclick="handleGoogleAuth()" class="w-full py-3 px-4 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold rounded-xl text-sm transition flex items-center justify-center space-x-2">
+                                <i data-lucide="globe" class="w-4 h-4 text-brand-400"></i>
+                                <span>Continue with Google</span>
+                            </button>
+
+                            <button onclick="continueAsGuest()" class="w-full py-3 px-4 bg-transparent hover:bg-slate-800 text-slate-400 hover:text-slate-200 font-medium rounded-xl text-xs transition flex items-center justify-center space-x-1">
+                                <span>Continue as Guest (No Login Needed)</span>
+                                <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+
+                        <!-- Toggle Auth Mode -->
+                        <div class="mt-8 pt-6 border-t border-slate-800 text-center text-xs text-slate-400">
+                            ${isSignUp ? `
+                                Already have an account? <button onclick="state.authMode='signin'; state.authError=null; render();" class="text-brand-400 font-bold hover:underline">Sign In</button>
+                            ` : `
+                                Don't have an account yet? <button onclick="state.authMode='signup'; state.authError=null; render();" class="text-brand-400 font-bold hover:underline">Create Account</button>
+                            `}
+                        </div>
+
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderLoadingState() {
+            return `
+                <div class="flex-1 flex flex-col items-center justify-center p-8 text-center">
+                    <div class="w-12 h-12 border-4 border-brand-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p class="text-slate-400 font-medium text-sm">Syncing your meals...</p>
+                </div>
+            `;
+        }
+
+        // --- PAGE 1: Horizontal Card Spinner Game UI ---
+        function renderPickerPage() {
+            if (state.meals.length === 0) {
+                return `
+                    <div class="flex-1 max-w-md mx-auto px-4 py-16 flex flex-col items-center justify-center text-center">
+                        <div class="w-20 h-20 bg-slate-800 text-amber-400 rounded-3xl flex items-center justify-center mb-6 shadow-inner border border-slate-700">
+                            <i data-lucide="utensils-crossed" class="w-10 h-10"></i>
+                        </div>
+                        <h2 class="text-2xl font-heading font-bold text-white mb-2">No Meals Found</h2>
+                        <p class="text-slate-400 text-sm mb-6">Add a few favorite meals to your list before spinning the reel!</p>
+                        <button onclick="openModal(null)" class="px-6 py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-2xl shadow-lg transition">
+                            + Add First Meal
+                        </button>
+                    </div>
+                `;
+            }
+
+            const repeatedMeals = [];
+            const REPEAT_COUNT = 8;
+            for (let i = 0; i < REPEAT_COUNT; i++) {
+                repeatedMeals.push(...state.meals);
+            }
+
+            return `
+                <div class="flex-1 max-w-6xl w-full mx-auto px-4 py-6 md:py-10 flex flex-col items-center justify-between">
+                    
+                    <div class="text-center max-w-xl mb-4 md:mb-8">
+                        <span class="inline-flex items-center space-x-1.5 px-3 py-1 bg-brand-950 text-brand-300 text-xs font-semibold rounded-full border border-brand-800 mb-3">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-brand-400"></i>
+                            <span>Spin to Decide Dinner</span>
+                        </span>
+                        <h1 class="text-3xl sm:text-4xl md:text-5xl font-heading font-extrabold text-white tracking-tight">
+                            What's for Dinner?
+                        </h1>
+                        <p class="text-slate-400 text-xs sm:text-sm mt-2">
+                            Press Spin or Quick Pick to let the horizontal reel choose your evening meal!
+                        </p>
+                    </div>
+
+                    <!-- Horizontal Reel Stage -->
+                    <div class="relative w-full max-w-4xl bg-slate-950/70 border border-slate-800 rounded-3xl p-4 sm:p-8 shadow-2xl overflow-hidden my-2">
+                        
+                        <!-- Pointer Pin -->
+                        <div class="absolute top-0 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none">
+                            <div class="w-8 h-8 bg-gradient-to-b from-amber-400 to-amber-500 rounded-full shadow-lg shadow-amber-500/50 flex items-center justify-center text-slate-900 font-extrabold border-2 border-white animate-bounce">
+                                <i data-lucide="chevron-down" class="w-6 h-6 stroke-[3]"></i>
+                            </div>
+                            <div class="w-1 h-6 bg-amber-400/80 rounded-full shadow-md"></div>
+                        </div>
+
+                        <!-- Gradients for Reel Fade -->
+                        <div class="absolute inset-y-0 left-0 w-12 sm:w-24 bg-gradient-to-r from-slate-950 to-transparent z-10 pointer-events-none"></div>
+                        <div class="absolute inset-y-0 right-0 w-12 sm:w-24 bg-gradient-to-l from-slate-950 to-transparent z-10 pointer-events-none"></div>
+
+                        <div class="w-full overflow-hidden py-6">
+                            <div id="reel-track" class="flex gap-4 reel-track transition-transform" style="transform: translateX(${state.reelPosition}px);">
+                                ${repeatedMeals.map((meal, index) => `
+                                    <div class="w-[260px] flex-shrink-0 bg-slate-800/90 hover:bg-slate-800 border border-slate-700/80 rounded-2xl p-5 flex flex-col justify-between card-shadow transition-all duration-200">
+                                        <div>
+                                            <div class="flex items-center justify-between mb-3">
+                                                <span class="px-2.5 py-0.5 bg-brand-950 text-brand-400 text-[11px] font-bold rounded-full border border-brand-800/50 uppercase tracking-wider">
+                                                    ${escapeHTML(meal.category || 'Dinner')}
+                                                </span>
+                                                <i data-lucide="chef-hat" class="w-4 h-4 text-slate-500"></i>
+                                            </div>
+                                            <h3 class="font-heading font-bold text-lg text-white line-clamp-2 leading-snug mb-2">
+                                                ${escapeHTML(meal.name)}
+                                            </h3>
+                                            <p class="text-xs text-slate-400 line-clamp-3 leading-relaxed mb-4">
+                                                ${escapeHTML(meal.ingredients || 'Tap spin to pick!')}
+                                            </p>
+                                        </div>
+                                        <div class="pt-3 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-slate-400">
+                                            <span>Option #${(index % state.meals.length) + 1}</span>
+                                            <span class="text-brand-400 font-semibold">Ready to cook</span>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Spin Control Buttons -->
+                    <div class="mt-6 flex flex-col sm:flex-row items-center gap-4 w-full justify-center max-w-md">
+                        <button onclick="startHorizontalSpin()" ${state.spinning ? 'disabled' : ''} class="w-full sm:w-auto flex-1 px-8 py-4 bg-gradient-to-r from-brand-600 via-brand-500 to-brand-700 hover:from-brand-500 hover:to-brand-800 text-white font-heading font-extrabold rounded-2xl shadow-xl shadow-brand-600/30 text-lg transition duration-200 flex items-center justify-center space-x-3 disabled:opacity-50">
+                            <i data-lucide="dices" class="w-6 h-6 ${state.spinning ? 'animate-spin' : ''}"></i>
+                            <span>${state.spinning ? 'Spinning Reel...' : 'SPIN FOR DINNER!'}</span>
+                        </button>
+                        
+                        <button onclick="quickPickMeal()" ${state.spinning ? 'disabled' : ''} class="w-full sm:w-auto px-6 py-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-2xl text-sm transition flex items-center justify-center space-x-2 border border-slate-700">
+                            <i data-lucide="zap" class="w-5 h-5 text-amber-400"></i>
+                            <span>Quick Pick</span>
+                        </button>
+                    </div>
+
+                </div>
+            `;
+        }
+
+        function startHorizontalSpin() {
+            if (state.spinning || state.meals.length === 0) return;
+            state.spinning = true;
+            initAudio();
+
+            const CARD_WIDTH = 260;
+            const CARD_GAP = 16;
+            const CARD_TOTAL = CARD_WIDTH + CARD_GAP;
+
+            const container = document.querySelector('.relative.w-full.max-w-4xl');
+            const containerWidth = container ? container.clientWidth : 800;
+            const centerOffset = (containerWidth / 2) - (CARD_WIDTH / 2) - 32;
+
+            const winningMealIndex = Math.floor(Math.random() * state.meals.length);
+            const targetCardGlobalIndex = (state.meals.length * 5) + winningMealIndex;
+            const targetPosition = - (targetCardGlobalIndex * CARD_TOTAL) + centerOffset;
+
+            const reelTrack = document.getElementById('reel-track');
+            const duration = 3800;
+            const startTime = performance.now();
+            const initialPos = state.reelPosition;
+
+            let lastTickIndex = -1;
+
+            function animate(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                const easeOut = 1 - Math.pow(1 - progress, 4);
+                const currentPos = initialPos + (targetPosition - initialPos) * easeOut;
+
+                state.reelPosition = currentPos;
+                if (reelTrack) {
+                    reelTrack.style.transform = `translateX(${currentPos}px)`;
+                }
+
+                const currentCardIndex = Math.floor(Math.abs(currentPos - centerOffset) / CARD_TOTAL);
+                if (currentCardIndex !== lastTickIndex) {
+                    playTickSound();
+                    lastTickIndex = currentCardIndex;
+                }
+
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    state.spinning = false;
+                    state.winnerMeal = state.meals[winningMealIndex];
+                    playWinSound();
+                    triggerConfetti();
+
+                    setTimeout(() => {
+                        openMealDetails(state.winnerMeal);
+                    }, 400);
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        function quickPickMeal() {
+            if (state.meals.length === 0) return;
+            const randomIndex = Math.floor(Math.random() * state.meals.length);
+            state.winnerMeal = state.meals[randomIndex];
+            playWinSound();
+            triggerConfetti();
+            openMealDetails(state.winnerMeal);
+        }
+
+        function triggerConfetti() {
+            try {
+                confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
+            } catch(e) {}
+        }
+
+        // --- PAGE 2: Manage Meals List ---
+        function renderMealsPage() {
+            const categories = ['All', ...new Set(state.meals.map(m => m.category || 'General'))];
+            
+            const filteredMeals = state.meals.filter(meal => {
+                const matchesCategory = state.selectedCategory === 'All' || (meal.category || 'General') === state.selectedCategory;
+                const matchesSearch = meal.name.toLowerCase().includes(state.searchQuery.toLowerCase()) || 
+                                     (meal.ingredients && meal.ingredients.toLowerCase().includes(state.searchQuery.toLowerCase()));
+                return matchesCategory && matchesSearch;
+            });
+
+            return `
+                <div class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-8">
+                    
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+                        <div>
+                            <h1 class="text-3xl font-heading font-extrabold text-white tracking-tight">My Cookbook</h1>
+                            <p class="text-slate-400 text-sm mt-1">Manage your family meals, recipes, and ingredients for the picker.</p>
+                        </div>
+                        <button onclick="openModal(null)" class="px-5 py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-2xl shadow-lg shadow-brand-600/20 transition flex items-center justify-center space-x-2">
+                            <i data-lucide="plus" class="w-5 h-5"></i>
+                            <span>Add New Meal</span>
+                        </button>
+                    </div>
+
+                    <div class="flex flex-col sm:flex-row gap-4 mb-8 items-center justify-between">
+                        <div class="relative w-full sm:w-80">
+                            <i data-lucide="search" class="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" value="${escapeHTML(state.searchQuery)}" oninput="handleSearch(this.value)" placeholder="Search meals or ingredients..." class="w-full pl-11 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        </div>
+
+                        <div class="flex items-center space-x-2 overflow-x-auto w-full sm:w-auto hide-scrollbar pb-1">
+                            ${categories.map(cat => `
+                                <button onclick="selectCategory('${cat}')" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${state.selectedCategory === cat ? 'bg-brand-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}">
+                                    ${escapeHTML(cat)}
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    ${filteredMeals.length === 0 ? `
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-3xl p-12 text-center max-w-md mx-auto my-8">
+                            <i data-lucide="search-x" class="w-10 h-10 text-slate-500 mx-auto mb-3"></i>
+                            <h3 class="text-lg font-bold text-white">No meals found</h3>
+                            <p class="text-xs text-slate-400 mt-1 mb-4">Try clearing your search query or category filter.</p>
+                            <button onclick="selectCategory('All'); handleSearch('');" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold rounded-xl">Reset Filters</button>
+                        </div>
+                    ` : `
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            ${filteredMeals.map(meal => `
+                                <div class="bg-slate-800/90 border border-slate-700/80 rounded-3xl p-6 shadow-md hover:border-slate-600 transition flex flex-col justify-between group">
+                                    <div>
+                                        <div class="flex items-start justify-between gap-3 mb-3">
+                                            <span class="px-2.5 py-0.5 bg-brand-950 text-brand-400 text-[11px] font-bold rounded-full border border-brand-800/50 uppercase tracking-wider">
+                                                ${escapeHTML(meal.category || 'Dinner')}
+                                            </span>
+                                            <div class="flex items-center space-x-1">
+                                                <button onclick="openModal('${meal.id}')" title="Edit Meal" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition">
+                                                    <i data-lucide="pencil" class="w-4 h-4"></i>
+                                                </button>
+                                                <button onclick="confirmDeleteMeal('${meal.id}')" title="Delete Meal" class="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-950/40 rounded-lg transition">
+                                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <h3 class="font-heading font-bold text-xl text-white group-hover:text-brand-400 transition mb-2">
+                                            ${escapeHTML(meal.name)}
+                                        </h3>
+                                        <div class="space-y-2 text-xs text-slate-300 mb-4">
+                                            <p class="line-clamp-2"><strong class="text-slate-100">Ingredients:</strong> ${escapeHTML(meal.ingredients || 'None listed.')}</p>
+                                            <p class="line-clamp-2 italic text-slate-400"><strong class="text-slate-300 not-italic">Notes:</strong> ${escapeHTML(meal.notes || 'No extra notes.')}</p>
+                                        </div>
+                                    </div>
+                                    <button onclick="openMealDetails(MealService.getMeals().then(list => list.find(m => m.id === '${meal.id}')))" class="w-full py-2.5 bg-slate-900/60 hover:bg-brand-900/40 hover:text-brand-300 text-slate-300 font-semibold rounded-xl text-xs transition flex items-center justify-center space-x-1.5 border border-slate-700">
+                                        <i data-lucide="eye" class="w-4 h-4"></i>
+                                        <span>View Details</span>
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function handleSearch(query) { state.searchQuery = query; render(); }
+        function selectCategory(cat) { state.selectedCategory = cat; render(); }
+
+        async function confirmDeleteMeal(id) {
+            if (confirm('Are you sure you want to delete this meal?')) {
+                await MealService.deleteMeal(id);
+                showToast('Meal deleted successfully.');
+                render();
+            }
+        }
+
+        // --- Modals ---
+        function openModal(mealId) {
+            if (mealId) {
+                state.modalMeal = state.meals.find(m => m.id === mealId);
+                state.isEditing = true;
+            } else {
+                state.modalMeal = { name: '', category: 'General', ingredients: '', notes: '' };
+                state.isEditing = true;
+            }
+            render();
+        }
+
+        async function openMealDetails(mealPromiseOrObject) {
+            const meal = await Promise.resolve(mealPromiseOrObject);
+            if (!meal) return;
+            state.modalMeal = meal;
+            state.isEditing = false;
+            render();
+        }
+
+        function closeModal() {
+            state.modalMeal = null;
+            state.isEditing = false;
+            render();
+        }
+
+        async function handleFormSubmit(e) {
+            e.preventDefault();
+            const name = document.getElementById('meal-name').value.trim();
+            const category = document.getElementById('meal-category').value.trim() || 'General';
+            const ingredients = document.getElementById('meal-ingredients').value.trim();
+            const notes = document.getElementById('meal-notes').value.trim();
+
+            if (!name) return;
+
+            if (state.modalMeal && state.modalMeal.id) {
+                await MealService.updateMeal(state.modalMeal.id, { name, category, ingredients, notes });
+                showToast('Meal updated successfully!');
+            } else {
+                await MealService.addMeal({ name, category, ingredients, notes });
+                showToast('New meal added to your cookbook!');
+            }
+
+            closeModal();
+        }
+
+        function renderMealModal() {
+            if (!state.modalMeal) return '';
+
+            const isEditing = state.isEditing;
+            const meal = state.modalMeal;
+
+            return `
+                <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 animate-fade-in">
+                    <div class="bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden">
+                        
+                        <div class="bg-gradient-to-r from-brand-700 to-brand-600 px-6 py-4 flex items-center justify-between text-white">
+                            <div class="flex items-center space-x-2">
+                                <i data-lucide="${isEditing ? 'pencil-line' : 'sparkles'}" class="w-5 h-5"></i>
+                                <h3 class="font-heading font-bold text-lg">
+                                    ${isEditing ? (meal.id ? 'Edit Meal' : 'Add New Meal') : '🎉 Tonight\'s Meal Winner!'}
+                                </h3>
+                            </div>
+                            <button onclick="closeModal()" class="p-1 rounded-lg hover:bg-white/10 transition text-white">
+                                <i data-lucide="x" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+
+                        <div class="p-6">
+                            ${isEditing ? `
+                                <form onsubmit="handleFormSubmit(event)" class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Meal Name</label>
+                                        <input type="text" id="meal-name" required value="${escapeHTML(meal.name)}" placeholder="e.g. Creamy Mushroom Risotto" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Category / Tag</label>
+                                        <input type="text" id="meal-category" value="${escapeHTML(meal.category || 'General')}" placeholder="e.g. Italian, Quick & Easy, Seafood" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Key Ingredients</label>
+                                        <textarea id="meal-ingredients" rows="3" placeholder="Arborio rice, mushrooms, parmesan, vegetable broth..." class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">${escapeHTML(meal.ingredients || '')}</textarea>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Cooking Notes / Instructions</label>
+                                        <textarea id="meal-notes" rows="2" placeholder="Stir constantly for 20 minutes. Garnish with fresh parsley." class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">${escapeHTML(meal.notes || '')}</textarea>
+                                    </div>
+                                    <div class="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+                                        <button type="button" onclick="closeModal()" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-sm transition">Cancel</button>
+                                        <button type="submit" class="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl text-sm shadow-md transition">Save Meal</button>
+                                    </div>
+                                </form>
+                            ` : `
+                                <div class="space-y-6">
+                                    <div class="text-center pb-4 border-b border-slate-800">
+                                        <span class="px-3 py-1 bg-brand-950 text-brand-400 text-xs font-semibold rounded-full border border-brand-800/50 uppercase tracking-wider">
+                                            ${escapeHTML(meal.category || 'Dinner Pick')}
+                                        </span>
+                                        <h4 class="text-2xl font-heading font-extrabold text-white mt-2">${escapeHTML(meal.name)}</h4>
+                                    </div>
+
+                                    <div class="space-y-4">
+                                        <div class="bg-slate-800/80 p-4 rounded-2xl border border-slate-700/60">
+                                            <h5 class="text-xs font-bold uppercase tracking-wider text-brand-400 mb-1 flex items-center space-x-1.5">
+                                                <i data-lucide="shopping-basket" class="w-4 h-4"></i>
+                                                <span>Ingredients Needed</span>
+                                            </h5>
+                                            <p class="text-sm text-slate-200 leading-relaxed">${escapeHTML(meal.ingredients || 'No ingredients listed.')}</p>
+                                        </div>
+
+                                        <div class="bg-amber-950/30 p-4 rounded-2xl border border-amber-800/40">
+                                            <h5 class="text-xs font-bold uppercase tracking-wider text-amber-400 mb-1 flex items-center space-x-1.5">
+                                                <i data-lucide="info" class="w-4 h-4"></i>
+                                                <span>Prep Notes</span>
+                                            </h5>
+                                            <p class="text-sm text-slate-300 leading-relaxed">${escapeHTML(meal.notes || 'No extra notes specified.')}</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-center justify-between pt-2">
+                                        <button onclick="closeModal(); startHorizontalSpin();" class="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-sm transition flex items-center space-x-2 border border-slate-700">
+                                            <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+                                            <span>Spin Again</span>
+                                        </button>
+                                        <button onclick="closeModal()" class="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl text-sm shadow-md transition">
+                                            Let's Cook!
+                                        </button>
+                                    </div>
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.replace(/[&<>'"]/g, 
+                tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+            );
+        }
+
+        window.onload = function() {
+            initAuthListener();
+        };
+    </script>
+</body>
+</html>
