@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f43f5e" />
+      <stop offset="100%" stop-color="#be123c" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#brandGrad)" />
+  <g fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" transform="translate(12, 12)">
+    <!-- Fork -->
+    <path d="M7 2v8a4 4 0 0 0 4 4v22" />
+    <path d="M3 2v5a4 4 0 0 0 4 4" />
+    <path d="M15 2v5a4 4 0 0 1-4 4" />
+    <!-- Knife -->
+    <path d="M30 36V2s7 3 7 16a7 7 0 0 1-7 7v11" />
+  </g>
+</svg>
