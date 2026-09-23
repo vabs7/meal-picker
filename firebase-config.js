@@ -28,6 +28,7 @@ if (typeof firebase !== 'undefined' && isFirebaseConfigured()) {
   }
 }
 
+// 6 Standard Curated Meals for Guests & New User Initial Seed
 const DEFAULT_MEALS = [
   {
     id: '1',
@@ -117,32 +118,35 @@ const AuthService = {
   }
 };
 
-// Meal Data Service API (User-scoped in Firestore + LocalStorage)
+// Meal Data Service API (Strict User Isolation)
 const MealService = {
   isCloudConnected: function() {
     return db !== null;
   },
 
+  // Returns Firestore collection ONLY for logged-in users.
+  // Guests return null to ensure they only see curated meals and never pollute global database!
   getMealsCollection: function() {
     if (!db) return null;
     const user = auth ? auth.currentUser : null;
     if (user) {
       return db.collection('users').doc(user.uid).collection('meals');
     }
-    return db.collection('meals');
+    return null;
   },
 
-  getLocalStorageMeals: function() {
-    const local = localStorage.getItem('mp_meals');
+  getGuestMeals: function() {
+    const local = localStorage.getItem('mp_guest_meals');
     if (local) {
       try { return JSON.parse(local); } catch(e) {}
     }
-    localStorage.setItem('mp_meals', JSON.stringify(DEFAULT_MEALS));
+    // Default to the 6 curated meals for guests
+    localStorage.setItem('mp_guest_meals', JSON.stringify(DEFAULT_MEALS));
     return DEFAULT_MEALS;
   },
 
-  saveLocalStorageMeals: function(meals) {
-    localStorage.setItem('mp_meals', JSON.stringify(meals));
+  saveGuestMeals: function(meals) {
+    localStorage.setItem('mp_guest_meals', JSON.stringify(meals));
   },
 
   getMeals: async function() {
@@ -151,21 +155,19 @@ const MealService = {
       try {
         const snapshot = await collection.get();
         if (!snapshot.empty) {
-          const meals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          this.saveLocalStorageMeals(meals);
-          return meals;
+          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         } else {
+          // Seed new user account with initial 6 standard meals
           for (let meal of DEFAULT_MEALS) {
             await collection.doc(meal.id).set(meal).catch(e => {});
           }
-          this.saveLocalStorageMeals(DEFAULT_MEALS);
           return DEFAULT_MEALS;
         }
       } catch (e) {
-        console.warn("Firestore getMeals error, reading LocalStorage:", e);
+        console.warn("Firestore getMeals error, reading guest meals:", e);
       }
     }
-    return this.getLocalStorageMeals();
+    return this.getGuestMeals();
   },
 
   subscribeMeals: function(onUpdate) {
@@ -177,50 +179,42 @@ const MealService = {
             for (let meal of DEFAULT_MEALS) {
               await collection.doc(meal.id).set(meal).catch(e => {});
             }
-            this.saveLocalStorageMeals(DEFAULT_MEALS);
             onUpdate(DEFAULT_MEALS);
           } else {
             const meals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            this.saveLocalStorageMeals(meals);
             onUpdate(meals);
           }
         }, err => {
-          console.warn("Firestore subscription error. Falling back to LocalStorage:", err);
-          onUpdate(this.getLocalStorageMeals());
+          console.warn("Firestore subscription error. Falling back to local guest meals:", err);
+          onUpdate(this.getGuestMeals());
         });
       } catch(e) {
         console.warn("Subscription failed to initialize, falling back:", e);
-        onUpdate(this.getLocalStorageMeals());
+        onUpdate(this.getGuestMeals());
         return null;
       }
     }
     
-    onUpdate(this.getLocalStorageMeals());
+    // For Guests: Immediately return the 6 standard curated meals!
+    onUpdate(this.getGuestMeals());
     return null;
   },
 
   addMeal: async function(meal) {
     const newMeal = { id: meal.id || Date.now().toString(), ...meal };
     
-    // Save to LocalStorage immediately
-    const meals = this.getLocalStorageMeals();
-    // Prevent duplicate IDs
-    const existingIndex = meals.findIndex(m => m.id === newMeal.id);
-    if (existingIndex !== -1) {
-      meals[existingIndex] = newMeal;
-    } else {
-      meals.push(newMeal);
-    }
-    this.saveLocalStorageMeals(meals);
-
-    // Save to Firestore in background
     const collection = this.getMealsCollection();
     if (collection) {
       try {
         await collection.doc(newMeal.id).set(newMeal);
       } catch (e) {
-        console.warn("Firestore addMeal background save failed:", e);
+        console.warn("Firestore addMeal failed:", e);
       }
+    } else {
+      // Guest mode local save
+      const meals = this.getGuestMeals();
+      meals.push(newMeal);
+      this.saveGuestMeals(meals);
     }
     
     return newMeal;
@@ -229,21 +223,20 @@ const MealService = {
   updateMeal: async function(id, updatedData) {
     const updatedMeal = { id, ...updatedData };
     
-    // Save to LocalStorage immediately
-    const meals = this.getLocalStorageMeals();
-    const index = meals.findIndex(m => m.id === id);
-    if (index !== -1) {
-      meals[index] = { ...meals[index], ...updatedData };
-      this.saveLocalStorageMeals(meals);
-    }
-
-    // Save to Firestore in background
     const collection = this.getMealsCollection();
     if (collection) {
       try {
         await collection.doc(id).set(updatedMeal, { merge: true });
       } catch (e) {
-        console.warn("Firestore updateMeal background save failed:", e);
+        console.warn("Firestore updateMeal failed:", e);
+      }
+    } else {
+      // Guest mode local update
+      const meals = this.getGuestMeals();
+      const index = meals.findIndex(m => m.id === id);
+      if (index !== -1) {
+        meals[index] = { ...meals[index], ...updatedData };
+        this.saveGuestMeals(meals);
       }
     }
 
@@ -251,21 +244,25 @@ const MealService = {
   },
 
   deleteMeal: async function(id) {
-    // Save to LocalStorage immediately
-    let meals = this.getLocalStorageMeals();
-    meals = meals.filter(m => m.id !== id);
-    this.saveLocalStorageMeals(meals);
-
-    // Delete from Firestore in background
     const collection = this.getMealsCollection();
     if (collection) {
       try {
         await collection.doc(id).delete();
       } catch (e) {
-        console.warn("Firestore deleteMeal background save failed:", e);
+        console.warn("Firestore deleteMeal failed:", e);
       }
+    } else {
+      // Guest mode local delete
+      let meals = this.getGuestMeals();
+      meals = meals.filter(m => m.id !== id);
+      this.saveGuestMeals(meals);
     }
 
     return true;
+  },
+
+  resetGuestToStandard: function() {
+    localStorage.setItem('mp_guest_meals', JSON.stringify(DEFAULT_MEALS));
+    return DEFAULT_MEALS;
   }
 };
