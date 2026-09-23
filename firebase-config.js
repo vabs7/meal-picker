@@ -132,6 +132,15 @@ const MealService = {
     return db.collection('meals');
   },
 
+  getLocalStorageMeals: function() {
+    const local = localStorage.getItem('mp_meals');
+    if (local) {
+      try { return JSON.parse(local); } catch(e) {}
+    }
+    localStorage.setItem('mp_meals', JSON.stringify(DEFAULT_MEALS));
+    return DEFAULT_MEALS;
+  },
+
   getMeals: async function() {
     const collection = this.getMealsCollection();
     if (collection) {
@@ -140,44 +149,45 @@ const MealService = {
         if (!snapshot.empty) {
           return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         } else {
-          // Seed default meals for new user
           for (let meal of DEFAULT_MEALS) {
-            await collection.doc(meal.id).set(meal);
+            await collection.doc(meal.id).set(meal).catch(e => {});
           }
           return DEFAULT_MEALS;
         }
       } catch (e) {
-        console.error("Firestore getMeals error, reading LocalStorage:", e);
+        console.warn("Firestore getMeals error, reading LocalStorage:", e);
       }
     }
-    
-    // Fallback to LocalStorage
-    const local = localStorage.getItem('mp_meals');
-    if (local) {
-      return JSON.parse(local);
-    }
-    localStorage.setItem('mp_meals', JSON.stringify(DEFAULT_MEALS));
-    return DEFAULT_MEALS;
+    return this.getLocalStorageMeals();
   },
 
   subscribeMeals: function(onUpdate) {
     const collection = this.getMealsCollection();
     if (collection) {
-      return collection.onSnapshot(async snapshot => {
-        if (snapshot.empty) {
-          // Seed default meals if user collection is completely empty
-          for (let meal of DEFAULT_MEALS) {
-            await collection.doc(meal.id).set(meal);
+      try {
+        return collection.onSnapshot(async snapshot => {
+          if (snapshot.empty) {
+            for (let meal of DEFAULT_MEALS) {
+              await collection.doc(meal.id).set(meal).catch(e => {});
+            }
+            onUpdate(DEFAULT_MEALS);
+          } else {
+            const meals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            onUpdate(meals);
           }
-          onUpdate(DEFAULT_MEALS);
-        } else {
-          const meals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          onUpdate(meals);
-        }
-      }, err => {
-        console.warn("Firestore subscription error:", err);
-      });
+        }, err => {
+          console.warn("Firestore subscription permission/network error. Falling back to LocalStorage:", err);
+          onUpdate(this.getLocalStorageMeals());
+        });
+      } catch(e) {
+        console.warn("Subscription failed to initialize, falling back:", e);
+        onUpdate(this.getLocalStorageMeals());
+        return null;
+      }
     }
+    
+    // Immediate callback for local storage
+    onUpdate(this.getLocalStorageMeals());
     return null;
   },
 
@@ -188,11 +198,11 @@ const MealService = {
         const docRef = await collection.add(meal);
         return { id: docRef.id, ...meal };
       } catch (e) {
-        console.error("Firestore addMeal failed:", e);
+        console.warn("Firestore addMeal failed, saving locally:", e);
       }
     }
     
-    const meals = await this.getMeals();
+    const meals = this.getLocalStorageMeals();
     const newMeal = { id: Date.now().toString(), ...meal };
     meals.push(newMeal);
     localStorage.setItem('mp_meals', JSON.stringify(meals));
@@ -206,11 +216,11 @@ const MealService = {
         await collection.doc(id).update(updatedData);
         return { id, ...updatedData };
       } catch (e) {
-        console.error("Firestore updateMeal failed:", e);
+        console.warn("Firestore updateMeal failed, updating locally:", e);
       }
     }
 
-    const meals = await this.getMeals();
+    const meals = this.getLocalStorageMeals();
     const index = meals.findIndex(m => m.id === id);
     if (index !== -1) {
       meals[index] = { ...meals[index], ...updatedData };
@@ -226,11 +236,11 @@ const MealService = {
         await collection.doc(id).delete();
         return true;
       } catch (e) {
-        console.error("Firestore deleteMeal failed:", e);
+        console.warn("Firestore deleteMeal failed, deleting locally:", e);
       }
     }
 
-    let meals = await this.getMeals();
+    let meals = this.getLocalStorageMeals();
     meals = meals.filter(m => m.id !== id);
     localStorage.setItem('mp_meals', JSON.stringify(meals));
     return true;
